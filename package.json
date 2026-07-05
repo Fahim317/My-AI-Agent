@@ -1,0 +1,12 @@
+{
+  "name": "my-ai-agent",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Personal AI agent - chat, search, remember, act, anywhere.",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}
