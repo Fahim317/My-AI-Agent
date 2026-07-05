@@ -1,9 +1,0 @@
-{
-  "name": "my-ai-agent",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Personal AI agent - chat, search, remember, anywhere.",
-  "engines": {
-    "node": ">=18"
-  }
-}
