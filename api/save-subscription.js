@@ -1,59 +1,69 @@
-// api/save-subscription.js
+// api/save-subscription.js — Turjo v3 (robust error handling)
 // POST { userId, subscription: { endpoint, keys: { p256dh, auth } } }
-// Saves (or updates) a push subscription so this device can receive notifications.
-
-async function supabaseRequest(path, options = {}) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      apikey: process.env.SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: options.prefer || "return=representation",
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase ${res.status}: ${text.slice(0, 300)}`);
-  }
-  return res.status === 204 ? null : res.json();
-}
 
 module.exports = async (req, res) => {
+  // Always set JSON header first — prevents empty response errors
+  res.setHeader("Content-Type", "application/json");
+
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Use POST" });
+    res.status(405).end(JSON.stringify({ ok: false, error: "Use POST" }));
     return;
   }
 
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
-    res.status(200).json({ ok: false, error: "Supabase not configured — notifications need SUPABASE_URL and SUPABASE_SERVICE_KEY set." });
+    res.status(200).end(JSON.stringify({ ok: false, error: "Supabase not configured." }));
     return;
   }
 
   try {
-    const { userId = "default", subscription } = req.body || {};
-    if (!subscription || !subscription.endpoint || !subscription.keys) {
-      res.status(400).json({ error: "Missing subscription object." });
+    const body = req.body || {};
+    const { userId = "default", subscription } = body;
+
+    if (!subscription || !subscription.endpoint) {
+      res.status(400).end(JSON.stringify({ ok: false, error: "Missing subscription.endpoint" }));
       return;
     }
 
-    // Upsert on endpoint: re-subscribing (e.g. after reinstall) just updates the same row.
-    await supabaseRequest("push_subscriptions?on_conflict=endpoint", {
-      method: "POST",
-      prefer: "resolution=merge-duplicates,return=minimal",
-      body: JSON.stringify({
-        user_id: userId,
-        endpoint: subscription.endpoint,
-        p256dh: subscription.keys.p256dh,
-        auth: subscription.keys.auth,
-      }),
+    const p256dh = subscription.keys?.p256dh || "";
+    const auth   = subscription.keys?.auth   || "";
+
+    if (!p256dh || !auth) {
+      res.status(400).end(JSON.stringify({ ok: false, error: "Missing subscription.keys (p256dh / auth)" }));
+      return;
+    }
+
+    const sbUrl = `${process.env.SUPABASE_URL}/rest/v1/push_subscriptions`;
+
+    // Try to delete existing row for this endpoint first (clean upsert without on_conflict issues)
+    await fetch(`${sbUrl}?endpoint=eq.${encodeURIComponent(subscription.endpoint)}`, {
+      method: "DELETE",
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+        Prefer: "return=minimal",
+      },
     });
 
-    res.status(200).json({ ok: true });
+    // Now insert fresh
+    const insertRes = await fetch(sbUrl, {
+      method: "POST",
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({ user_id: userId, endpoint: subscription.endpoint, p256dh, auth }),
+    });
+
+    if (!insertRes.ok) {
+      const errText = await insertRes.text();
+      throw new Error(`Supabase insert ${insertRes.status}: ${errText.slice(0, 300)}`);
+    }
+
+    res.status(200).end(JSON.stringify({ ok: true, userId }));
   } catch (e) {
-    console.error("save-subscription error:", e);
-    res.status(500).json({ ok: false, error: e.message });
+    console.error("save-subscription error:", e.message);
+    res.status(500).end(JSON.stringify({ ok: false, error: e.message }));
   }
 };
