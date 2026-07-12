@@ -348,19 +348,31 @@ function addBubble(role, text) {
   copyBtn.className = 'copy-btn';
   copyBtn.textContent = '📋 copy';
   copyBtn.onclick = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      copyBtn.textContent = '✓ copied';
-      setTimeout(() => { copyBtn.textContent = '📋 copy'; }, 1500);
-    }).catch(() => {
-      // fallback for older browsers
+    function legacyCopy() {
       const ta = document.createElement('textarea');
-      ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
-      document.body.appendChild(ta); ta.select();
-      document.execCommand('copy');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, 999999);
+      try {
+        document.execCommand('copy');
+        copyBtn.textContent = '✓ copied';
+      } catch (_) {
+        copyBtn.textContent = 'long press to copy';
+      }
       document.body.removeChild(ta);
-      copyBtn.textContent = '✓ copied';
-      setTimeout(() => { copyBtn.textContent = '📋 copy'; }, 1500);
-    });
+      setTimeout(() => { copyBtn.textContent = '📋 copy'; }, 1800);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => { copyBtn.textContent = '✓ copied'; setTimeout(() => { copyBtn.textContent = '📋 copy'; }, 1800); })
+        .catch(() => legacyCopy());
+    } else {
+      legacyCopy();
+    }
   };
   actions.appendChild(copyBtn);
 
