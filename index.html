@@ -434,7 +434,7 @@ loadHistory();
 // ---------- sending + rate-limit countdown ----------
 let rateLimitTimer = null;
 let isRateLimited = false;
-let pendingRetryMessage = null; // stored message for auto-retry after cooldown
+let pendingRetryMessage = null;
 
 function setStatus(state) {
   orb.className = 'orb' + (state ? ' ' + state : '');
@@ -447,7 +447,7 @@ function readyTimeStr(futureMs) {
   });
 }
 
-function startCountdown(seconds, retryMessage) {
+function startCountdown(seconds, retryMessage, silent) {
   isRateLimited = true;
   if (retryMessage !== undefined) pendingRetryMessage = retryMessage;
   clearInterval(rateLimitTimer);
@@ -455,6 +455,14 @@ function startCountdown(seconds, retryMessage) {
   $('sendBtn').disabled = true;
   $('micBtn').disabled = true;
   orb.className = 'orb';
+
+  // Show one-time info bubble only on first hit (not on silent retries)
+  if (!silent) {
+    const readyTime = readyTimeStr(readyAt);
+    const mins = Math.ceil(seconds / 60);
+    const label = seconds >= 60 ? `~${mins} min` : `${seconds}s`;
+    addError(`⏳ Rate limit — auto-retrying at ${readyTime} (${label})`);
+  }
 
   function tick() {
     const remaining = Math.ceil((readyAt - Date.now()) / 1000);
@@ -464,8 +472,6 @@ function startCountdown(seconds, retryMessage) {
       orb.className = 'orb';
       $('sendBtn').disabled = false;
       $('micBtn').disabled = false;
-
-      // Auto-retry the pending message if any
       if (pendingRetryMessage) {
         const msg = pendingRetryMessage;
         pendingRetryMessage = null;
@@ -476,14 +482,23 @@ function startCountdown(seconds, retryMessage) {
       }
       return;
     }
-    statusEl.textContent = `not ready — ${remaining}s (ready ${readyTimeStr(readyAt)})`;
+    // Format: "not ready — 43s (ready 10:17:00 AM)" or "not ready — 9m 12s (ready 10:20:00 AM)"
+    let timeLabel;
+    if (remaining >= 60) {
+      const m = Math.floor(remaining / 60);
+      const s = remaining % 60;
+      timeLabel = `${m}m ${s}s`;
+    } else {
+      timeLabel = `${remaining}s`;
+    }
+    statusEl.textContent = `not ready — ${timeLabel} (ready ${readyTimeStr(readyAt)})`;
   }
 
   tick();
   rateLimitTimer = setInterval(tick, 1000);
 }
 
-// Silent retry after cooldown — no new user bubble
+// Silent auto-retry — no new user bubble, no error bubble unless real error
 async function autoRetry(text) {
   setStatus('thinking');
   try {
@@ -496,10 +511,8 @@ async function autoRetry(text) {
 
     if (!res.ok) {
       if (data.retryAfterSeconds) {
-        // Still limited — start a new countdown and retry again after that
-        const nextReadyTime = readyTimeStr(Date.now() + data.retryAfterSeconds * 1000);
-        addError(`Still not ready — next try at ${nextReadyTime} (${data.retryAfterSeconds}s more)`);
-        startCountdown(data.retryAfterSeconds, text);
+        // Still limited — silently restart countdown, no new error bubble
+        startCountdown(data.retryAfterSeconds, text, true); // silent=true
       } else {
         addError(data.error || 'Server error');
         if (!isRateLimited) setStatus('');
@@ -538,9 +551,7 @@ async function sendMessage(text) {
 
     if (!res.ok) {
       if (data.retryAfterSeconds) {
-        const readyTime = readyTimeStr(Date.now() + data.retryAfterSeconds * 1000);
-        addError(`Rate limit — auto-retrying at ${readyTime} (${data.retryAfterSeconds}s)`);
-        startCountdown(data.retryAfterSeconds, text); // pass text → auto-retry when ready
+        startCountdown(data.retryAfterSeconds, text, false); // show one error bubble
       } else {
         addError(data.error || 'Server error');
       }
