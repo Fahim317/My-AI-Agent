@@ -58,15 +58,69 @@ ABSOLUTE RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 OTHER TOOLS:
-- web_search: real-time info, news, prices, anything current
+- web_search: real-time info, news, prices, anything current — use liberally
 - calculate: ALL math — never estimate, always call this tool
 - convert_currency: live currency rates (supports BDT)
+- generate_image: create AI images from any description — use when user asks for image/picture/photo/design
+- search_history: search Fahim's past conversations — use when user asks "age ki bolechi", "আগে কি বানিয়েছিলাম", "amader last project"
 - send_email: only when user explicitly asks
 
-Keep replies concise unless depth is requested.`;
+━━ CODING & BUILDING ━━
+You are a world-class developer. When asked to build ANYTHING — website, app, tool, script, automation, SaaS, landing page, e-commerce, dashboard — write COMPLETE working code. Rules:
+- NEVER truncate code with "..." or "// rest of code here" — always write 100% complete code
+- For multi-file projects: write EVERY file completely, label each with filename
+- Default stack: HTML/CSS/JS for simple sites, Next.js + Vercel for full-stack, Python for scripts
+- Always wrap code in proper markdown: \`\`\`html, \`\`\`javascript, \`\`\`python etc.
+- After code, add a short "কিভাবে ব্যবহার করবে" section in user's language
+- If user says "same project e add koro" or "age jeta baniyechilam" → use search_history to recall it first
+
+━━ ANALYSIS & RESEARCH ━━
+- Do deep analysis: market research, competitor analysis, business plans, financial projections
+- Use web_search to get current data, then synthesize into actionable insights
+- For any topic: give structured, practical breakdown
+
+━━ CONTENT & CREATIVE ━━
+- Write any content: social posts, captions, ads, articles, emails, scripts, stories
+- Generate image prompts and actual images with generate_image tool
+- Brainstorm ideas: product names, campaign ideas, business concepts, feature ideas
+- Always tailor content to Bangladeshi context when relevant
+
+━━ MEMORY ━━
+- User's important projects/work may be in past conversations — use search_history when context needed
+- Explicitly saved notes/reminders are in database — use get_notes to recall them
+
+Reply concise for simple questions, detailed for complex builds. Match the depth to what's asked.`;
 }
 
-// ── Tavily web search ──
+// ── Image generation (Pollinations.ai — free, no API key) ──
+async function generateImage(prompt, width = 1024, height = 768) {
+  const seed = Date.now();
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&nologo=true&seed=${seed}`;
+  // Return special marker frontend will render as <img>
+  return `[IMAGE:${url}|${prompt}]`;
+}
+
+// ── Search past conversation history ──
+async function searchHistory(userId, query) {
+  if (!supabaseReady()) return "Memory not set up.";
+  try {
+    const rows = await sbReq(
+      `messages?user_id=eq.${encodeURIComponent(userId)}&order=created_at.desc&limit=200`,
+      { method: "GET", prefer: "" }
+    );
+    if (!rows?.length) return "No past conversations found.";
+    const keywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 2);
+    const relevant = rows
+      .filter(r => keywords.some(k => r.content.toLowerCase().includes(k)))
+      .slice(0, 15);
+    if (!relevant.length) return `No past conversations found matching "${query}".`;
+    return relevant.map(r =>
+      `[${r.role} — ${new Date(r.created_at).toLocaleString()}]\n${r.content.slice(0, 400)}`
+    ).join("\n\n---\n\n");
+  } catch (e) {
+    return `History search failed: ${e.message}`;
+  }
+}
 async function callTavily(query) {
   const key = process.env.TAVILY_API_KEY;
   if (!key) return "Web search not set up — add TAVILY_API_KEY in Vercel env vars.";
@@ -292,6 +346,30 @@ function buildTools() {
       parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
     },
     {
+      name: "generate_image",
+      description: "Generate an AI image from a text description. Use when user asks for image, picture, photo, design, illustration, poster, banner, logo idea etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Detailed English description of the image to generate. Be specific about style, colors, subject." },
+          width: { type: "number", description: "Width in pixels. Default 1024. Use 1080 for square, 1920 for landscape, 768 for portrait." },
+          height: { type: "number", description: "Height in pixels. Default 768." },
+        },
+        required: ["prompt"],
+      },
+    },
+    {
+      name: "search_history",
+      description: "Search Fahim's past conversation history. Use when user asks about previous projects, past work, 'age ki bolechi', 'amader last project', or needs context from earlier conversations.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search for in past conversations" },
+        },
+        required: ["query"],
+      },
+    },
+    {
       name: "calculate",
       description: "Exact arithmetic. Always use this for math, never compute in your head.",
       parameters: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] },
@@ -421,6 +499,8 @@ module.exports = async (req, res) => {
 
       let result;
       if (name === "web_search") result = await callTavily(args.query);
+      else if (name === "generate_image") result = await generateImage(args.prompt, args.width, args.height);
+      else if (name === "search_history") result = await searchHistory(userId, args.query);
       else if (name === "calculate") {
         try { result = String(safeCalculate(args.expression)); }
         catch (e) { result = `Calc error: ${e.message}`; }
