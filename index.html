@@ -120,6 +120,44 @@
   .bubble-wrap { display: flex; flex-direction: column; max-width: 84%; }
   .bubble-wrap.user { align-self: flex-end; align-items: flex-end; }
   .bubble-wrap.model { align-self: flex-start; align-items: flex-start; }
+
+  /* ── code blocks ── */
+  .code-block {
+    background: #0d1117;
+    border: 1px solid #2A2E3B;
+    border-radius: 10px;
+    margin: 8px 0;
+    overflow: hidden;
+    max-width: min(100%, 560px);
+    align-self: flex-start;
+  }
+  .code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    background: #161b22;
+    border-bottom: 1px solid #2A2E3B;
+  }
+  .code-lang { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--teal); }
+  .code-copy-btn {
+    background: none; border: 1px solid #2A2E3B; color: var(--muted);
+    border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+  }
+  .code-copy-btn:active { color: var(--amber); }
+  .code-block pre {
+    margin: 0; padding: 12px 14px; overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+    line-height: 1.6; color: #e6edf3; white-space: pre;
+  }
+
+  /* ── generated images ── */
+  .ai-image-wrap { margin: 8px 0; align-self: flex-start; }
+  .ai-image-wrap img {
+    max-width: 100%; border-radius: 10px;
+    border: 1px solid #2A2E3B; display: block;
+  }
+  .ai-image-caption { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .copy-btn {
     background: none; border: none; color: var(--muted);
     font-size: 11px; cursor: pointer; padding: 3px 4px;
@@ -331,49 +369,127 @@ function speak(text) {
   speechSynthesis.speak(u);
 }
 
+// ---------- markdown + image renderer ----------
+function escHtml(t) {
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function copyToClipboard(text, btn) {
+  function legacy() {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly','');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    ta.setSelectionRange(0, 999999);
+    try { document.execCommand('copy'); btn.textContent = '✓ copied'; }
+    catch(_) { btn.textContent = 'select manually'; }
+    document.body.removeChild(ta);
+    setTimeout(() => { btn.textContent = btn.dataset.orig || '📋 copy'; }, 1800);
+  }
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => { btn.textContent = '✓ copied'; setTimeout(() => { btn.textContent = btn.dataset.orig || '📋 copy'; }, 1800); })
+      .catch(legacy);
+  } else { legacy(); }
+}
+
+function renderTextInline(text) {
+  const span = document.createElement('span');
+  span.style.whiteSpace = 'pre-wrap';
+  span.innerHTML = escHtml(text)
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>');
+  return span;
+}
+
+function renderMessage(text) {
+  const container = document.createElement('div');
+
+  // Split on code blocks and image markers
+  const parts = text.split(/(```[\s\S]*?```|\[IMAGE:[^\]]+\])/g);
+
+  parts.forEach(part => {
+    if (part.startsWith('```')) {
+      // Code block
+      const inner = part.slice(3, -3);
+      const newline = inner.indexOf('\n');
+      const lang = newline > -1 ? inner.slice(0, newline).trim() || 'code' : 'code';
+      const code = newline > -1 ? inner.slice(newline + 1) : inner;
+
+      const block = document.createElement('div');
+      block.className = 'code-block';
+
+      const header = document.createElement('div');
+      header.className = 'code-header';
+      const langSpan = document.createElement('span');
+      langSpan.className = 'code-lang';
+      langSpan.textContent = lang;
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'code-copy-btn';
+      copyBtn.dataset.orig = '📋 copy code';
+      copyBtn.textContent = '📋 copy code';
+      copyBtn.onclick = () => copyToClipboard(code, copyBtn);
+      header.appendChild(langSpan);
+      header.appendChild(copyBtn);
+
+      const pre = document.createElement('pre');
+      const codeEl = document.createElement('code');
+      codeEl.textContent = code;
+      pre.appendChild(codeEl);
+
+      block.appendChild(header);
+      block.appendChild(pre);
+      container.appendChild(block);
+
+    } else if (part.startsWith('[IMAGE:')) {
+      // AI generated image
+      const m = part.match(/\[IMAGE:([^|]+)\|([^\]]*)\]/);
+      if (m) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ai-image-wrap';
+        const img = document.createElement('img');
+        img.src = m[1];
+        img.alt = m[2];
+        img.loading = 'lazy';
+        img.onerror = () => { wrap.innerHTML = '<span style="color:var(--muted);font-size:12px">⚠ Image load failed — try again</span>'; };
+        const caption = document.createElement('div');
+        caption.className = 'ai-image-caption';
+        caption.textContent = '🎨 AI generated · ' + m[2].slice(0, 60);
+        wrap.appendChild(img);
+        wrap.appendChild(caption);
+        container.appendChild(wrap);
+      }
+    } else if (part.trim()) {
+      container.appendChild(renderTextInline(part));
+    }
+  });
+
+  return container;
+}
+
 function addBubble(role, text) {
   const wrap = document.createElement('div');
   wrap.className = 'bubble-wrap ' + role;
 
   const div = document.createElement('div');
   div.className = 'bubble ' + role;
-  div.textContent = text;
+
+  if (role === 'model') {
+    div.appendChild(renderMessage(text));
+  } else {
+    div.textContent = text;
+  }
   wrap.appendChild(div);
 
-  // Action row: copy + (for model) play button
+  // Action row
   const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;gap:6px;padding:2px 2px 0;';
+  actions.style.cssText = 'display:flex;gap:6px;padding:3px 2px 0;';
 
   const copyBtn = document.createElement('button');
   copyBtn.className = 'copy-btn';
+  copyBtn.dataset.orig = '📋 copy';
   copyBtn.textContent = '📋 copy';
-  copyBtn.onclick = () => {
-    function legacyCopy() {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      ta.setSelectionRange(0, 999999);
-      try {
-        document.execCommand('copy');
-        copyBtn.textContent = '✓ copied';
-      } catch (_) {
-        copyBtn.textContent = 'long press to copy';
-      }
-      document.body.removeChild(ta);
-      setTimeout(() => { copyBtn.textContent = '📋 copy'; }, 1800);
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text)
-        .then(() => { copyBtn.textContent = '✓ copied'; setTimeout(() => { copyBtn.textContent = '📋 copy'; }, 1800); })
-        .catch(() => legacyCopy());
-    } else {
-      legacyCopy();
-    }
-  };
+  copyBtn.onclick = () => copyToClipboard(text, copyBtn);
   actions.appendChild(copyBtn);
 
   if (role === 'model') {
