@@ -449,8 +449,11 @@ async function callGemini(contents, tools, attempt = 0) {
       generationConfig: { temperature: 0.7 },
     }),
   });
-  if (res.status === 429 && attempt < 2) {
-    await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt)));
+  if ((res.status === 429 || res.status === 503) && attempt < 3) {
+    const waitMs = res.status === 503
+      ? 4000 * (attempt + 1)          // 503: 4s, 8s, 12s
+      : 1500 * Math.pow(2, attempt);  // 429: 1.5s, 3s, 6s
+    await new Promise(r => setTimeout(r, waitMs));
     return callGemini(contents, tools, attempt + 1);
   }
   const data = await res.json();
@@ -465,6 +468,11 @@ async function callGemini(contents, tools, attempt = 0) {
       } catch (_) {}
       const err = new Error("rate_limit");
       err.retryAfterSeconds = retryAfterSeconds;
+      throw err;
+    }
+    if (res.status === 503) {
+      const err = new Error("server_busy");
+      err.retryAfterSeconds = 30;
       throw err;
     }
     throw new Error(`Gemini ${res.status}: ${JSON.stringify(data).slice(0,500)}`);
