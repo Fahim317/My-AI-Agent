@@ -1,9 +1,8 @@
-// api/cron-daily.js — Turjo Morning Briefing
+// api/cron-daily.js — Turjo Morning Briefing v3
 // Runs once daily at 8 AM Dhaka time (2 AM UTC) via Vercel free cron.
-// For each user with push subscriptions:
-//   1. Fetches their pending tasks + reminders from Supabase
-//   2. Calls Gemini to write a personalized Bangla/Banglish morning briefing
-//   3. Sends it as a push notification
+// Fetches each user's pending tasks + today's reminders,
+// asks Gemini to write a personalized Banglish briefing,
+// then sends it as a push notification.
 
 const webpush = require("web-push");
 
@@ -25,7 +24,7 @@ async function sbReq(path, options = {}) {
       ...(options.headers || {}),
     },
   });
-  if (!res.ok) { const t = await res.text(); throw new Error(`Supabase ${res.status}: ${t.slice(0, 200)}`); }
+  if (!res.ok) { const t = await res.text(); throw new Error(`Supabase ${res.status}: ${t.slice(0,200)}`); }
   return res.status === 204 ? null : res.json();
 }
 
@@ -33,47 +32,45 @@ async function generateBriefing(tasks, reminders) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
 
-  const taskList = tasks.map(t => `- ${t.content}`).join("\n") || "কোনো task নেই";
+  const taskList = tasks.map(t => `- ${t.content}`).join("\n") || "kono task nei";
   const reminderList = reminders.map(r => {
     const dhakaTime = r.remind_at
       ? new Date(new Date(r.remind_at).getTime() + 6 * 60 * 60 * 1000)
-          .toISOString().replace("T", " ").slice(0, 16)
+          .toISOString().replace("T"," ").slice(0,16)
       : "";
     return `- ${r.content}${dhakaTime ? ` (${dhakaTime})` : ""}`;
-  }).join("\n") || "কোনো reminder নেই";
+  }).join("\n") || "kono reminder nei";
 
-  const prompt = `তুমি Turjo, Fahim-এর personal AI agent। আজকের সকালের briefing লেখো।
+  const prompt = `You are Turjo, Fahim's personal AI agent. Write a short morning briefing notification.
 
-Pending tasks (${tasks.length}টা):
+Pending tasks (${tasks.length}):
 ${taskList}
 
-Today's reminders (${reminders.length}টা):
+Today's reminders (${reminders.length}):
 ${reminderList}
 
 Rules:
-- Banglish-এ লেখো (romanized Bengali + English mix)
-- 2-3 line max — notification-এ fit হতে হবে
-- Warm but focused tone
-- Start with "Good morning!" or "Shubho shokal!"
-- Mention task/reminder count, most important ones
-- End with one motivational word
-- NEVER exceed 200 characters total (push notification limit)`;
+- Write in Banglish (romanized Bengali + English mix) — warm and energetic
+- MAX 160 characters total (must fit in a push notification)
+- Start with "Shubho shokal!" or "Good morning!"
+- Mention the most important item(s) briefly
+- End with one short motivational phrase
+- If no tasks and no reminders: just a warm good morning message`;
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.8, maxOutputTokens: 150 },
+          generationConfig: { temperature: 0.8, maxOutputTokens: 100 },
         }),
       }
     );
     const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    return text || null;
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
   } catch (e) {
     console.error("Gemini briefing error:", e.message);
     return null;
@@ -96,52 +93,54 @@ module.exports = async (req, res) => {
   );
 
   try {
-    // Get all unique users who have push subscriptions
     const subs = await sbReq("push_subscriptions?select=*", { method: "GET", prefer: "" });
     if (!subs?.length) {
-      res.status(200).json({ ok: true, users: 0, notificationsSent: 0 });
+      res.status(200).json({ ok: true, users: 0, sent: 0 });
       return;
     }
 
-    // Group subscriptions by user_id
+    // Group by user_id
     const userMap = {};
     for (const sub of subs) {
       if (!userMap[sub.user_id]) userMap[sub.user_id] = [];
       userMap[sub.user_id].push(sub);
     }
 
-    const nowIso = new Date().toISOString();
+    const nowIso  = new Date().toISOString();
+    const in24h   = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     let totalSent = 0;
 
     for (const [userId, userSubs] of Object.entries(userMap)) {
       try {
-        // Fetch pending tasks
+        // Pending tasks
         const tasks = await sbReq(
           `notes?user_id=eq.${encodeURIComponent(userId)}&type=eq.task&order=created_at.desc&limit=10`,
           { method: "GET", prefer: "" }
         ) || [];
 
-        // Fetch today's reminders (next 24 hours)
-        const in24h = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        // Today's reminders
         const reminders = await sbReq(
-          `notes?user_id=eq.${encodeURIComponent(userId)}&type=eq.reminder&sent=eq.false&active=eq.true&remind_at=gte.${encodeURIComponent(nowIso)}&remind_at=lte.${encodeURIComponent(in24h)}&order=remind_at.asc&limit=5`,
+          `notes?user_id=eq.${encodeURIComponent(userId)}&type=eq.reminder&sent=eq.false&active=eq.true` +
+          `&remind_at=gte.${encodeURIComponent(nowIso)}&remind_at=lte.${encodeURIComponent(in24h)}` +
+          `&order=remind_at.asc&limit=5`,
           { method: "GET", prefer: "" }
         ) || [];
 
         // Generate AI briefing
-        let body = "Shubho shokal! Turjo ekhane ache — bolo ki dorkar 😊";
+        let body  = "Shubho shokal! Turjo ekhane ache — bolo ki dorkar 😊";
         let title = "🌅 Good Morning";
 
         if (tasks.length > 0 || reminders.length > 0) {
           const aiText = await generateBriefing(tasks, reminders);
-          if (aiText) body = aiText;
-          else {
+          if (aiText) {
+            body = aiText;
+          } else {
             const parts = [];
-            if (tasks.length) parts.push(`${tasks.length}ta task pending`);
-            if (reminders.length) parts.push(`${reminders.length}ta reminder aj`);
-            body = `Shubho shokal! Aj tomar ${parts.join(", ")} ache. Chaliye jao! 💪`;
+            if (tasks.length)     parts.push(`${tasks.length}ta task`);
+            if (reminders.length) parts.push(`${reminders.length}ta reminder`);
+            body = `Shubho shokal! Aj tomar ${parts.join(" r ")} ache. Chalao! 💪`;
           }
-          title = `🌅 Good Morning — ${tasks.length + reminders.length} ta item`;
+          title = `🌅 Good Morning — ${tasks.length + reminders.length}ta item`;
         }
 
         const payload = JSON.stringify({ title, body });
@@ -155,18 +154,19 @@ module.exports = async (req, res) => {
             totalSent++;
           } catch (e) {
             if (e.statusCode === 404 || e.statusCode === 410) {
-              await sbReq(`push_subscriptions?endpoint=eq.${encodeURIComponent(sub.endpoint)}`,
+              await sbReq(
+                `push_subscriptions?endpoint=eq.${encodeURIComponent(sub.endpoint)}`,
                 { method: "DELETE", prefer: "return=minimal" }
               ).catch(() => {});
             }
           }
         }
       } catch (e) {
-        console.error(`Briefing failed for user ${userId}:`, e.message);
+        console.error(`Briefing failed for ${userId}:`, e.message);
       }
     }
 
-    res.status(200).json({ ok: true, users: Object.keys(userMap).length, notificationsSent: totalSent });
+    res.status(200).json({ ok: true, users: Object.keys(userMap).length, sent: totalSent });
   } catch (e) {
     console.error("cron-daily error:", e);
     res.status(500).json({ ok: false, error: e.message });
