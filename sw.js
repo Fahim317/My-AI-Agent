@@ -1,11 +1,11 @@
-// sw.js — Turjo v3 (vibration + requireInteraction + morning briefing)
-// CACHE version bumped to v3 — forces old cache to clear on all devices
+// sw.js — Turjo v3
+// CACHE bumped to v3 — clears old cache on all devices automatically
 
 const CACHE = "agent-shell-v3";
 const SHELL = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
   self.skipWaiting();
 });
 
@@ -19,55 +19,47 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-  if (url.pathname.startsWith("/api/")) return;
+  if (new URL(event.request.url).pathname.startsWith("/api/")) return;
   event.respondWith(
     caches.match(event.request).then((cached) =>
       cached ||
-      fetch(event.request).then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-        return response;
+      fetch(event.request).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(event.request, copy));
+        return res;
       })
     )
   );
 });
 
-// ── Push notification handler ──
+// ── Push notification ──
 self.addEventListener("push", (event) => {
   let data = { title: "Turjo", body: "New notification." };
-  try {
-    if (event.data) data = event.data.json();
-  } catch (e) {
-    if (event.data) data.body = event.data.text();
-  }
+  try { if (event.data) data = event.data.json(); }
+  catch (e) { if (event.data) data.body = event.data.text(); }
 
   const title = data.title || "Turjo";
   const body  = data.body  || "";
 
-  // Detect type for different vibration patterns
+  // Different vibration for different notification types
   const isReminder = title.toLowerCase().includes("reminder");
-  const isMorning  = title.toLowerCase().includes("morning") ||
-                     title.toLowerCase().includes("good morning") ||
-                     title.toLowerCase().includes("shubho");
+  const isMorning  = title.toLowerCase().includes("morning") || title.toLowerCase().includes("shubho");
 
-  // Reminder  → urgent: double-buzz then long hold
-  // Morning   → gentle wave: soft-soft-medium
-  // Default   → signature Turjo: short-pause-short-pause-long
   const vibrate = isReminder
-    ? [250, 80, 250, 80, 700, 120, 700]
+    ? [300, 100, 300, 100, 700, 150, 700]   // urgent double-buzz for reminders
     : isMorning
-    ? [150, 120, 150, 120, 400]
-    : [300, 100, 200, 100, 500];
+    ? [200, 100, 200, 100, 400]              // gentle wave for morning briefing
+    : [300, 100, 200, 100, 500];             // signature Turjo pattern
 
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon:             "/icon-192.png",
-      badge:            "/icon-192.png",
+      icon:               "/icon-192.png",
+      badge:              "/icon-192.png",
       vibrate,
       requireInteraction: true,   // stays on screen until user acts
-      renotify:           true,   // vibrate even if same tag
+      renotify:           true,   // always vibrate even with same tag
+      tag:                "turjo",
       timestamp:          Date.now(),
       actions: [
         { action: "open",    title: "Open Turjo" },
@@ -81,7 +73,6 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   if (event.action === "dismiss") return;
-
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
